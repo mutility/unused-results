@@ -3,6 +3,8 @@ package unret
 import (
 	"go/token"
 	"go/types"
+	"io"
+	"log"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -12,11 +14,12 @@ import (
 
 const doc = `unret reports returns from unexported functions that are never used.`
 
-var reportExported, reportUncalled bool
+var reportExported, reportUncalled, debugAnalyzer bool
 
 func init() {
 	Analyzer.Flags.BoolVar(&reportExported, "exported", false, "report unused returns from exported functions")
 	Analyzer.Flags.BoolVar(&reportUncalled, "uncalled", false, "report unused returns from uncalled functions")
+	Analyzer.Flags.BoolVar(&debugAnalyzer, "verbose", true, "issue debug logging")
 }
 
 var Analyzer = &analysis.Analyzer{
@@ -27,6 +30,10 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	debug := log.New(log.Default().Writer(), pass.Pkg.Name()+": ", log.Lshortfile)
+	if !debugAnalyzer {
+		debug.SetOutput(io.Discard)
+	}
 	type returns struct {
 		used uint
 	}
@@ -86,7 +93,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	// for k, v := range typeFuncs {
-	// 	log.Println("tf:", k, v)
+	// 	debug.Println("tf:", k, v)
 	// }
 
 	// funResult returns the *types.Func and result index that a ssa.Value
@@ -126,29 +133,30 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				}
 				return funResult(com.Value)
 			}
-			// log.Printf("%#v", op)
+			// debug.Printf("%#v", op)
 			return nil, 0
 
 		case *ssa.MakeInterface:
 			switch op.Type().(type) {
 			case *types.Named:
-				// log.Println("MakeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
+				// debug.Println("MakeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
 				f, i := funResult(op.X)
-				// log.Println("MakeInterface:", f, i)
+				// debug.Println("MakeInterface:", f, i)
 				return f, i
 			case *types.Interface:
 			}
 			return funResult(op.X)
 		case *ssa.ChangeInterface:
-			// log.Println("ChangeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
+			// debug.Println("ChangeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
 			return funResult(op.X)
 		default:
-			// log.Printf("whattabout %T: %v", op, op)
+			// debug.Printf("whattabout %T: %v", op, op)
 			return nil, 0
 		}
 	}
 
 	for _, fn := range prog.SrcFuncs {
+		// dumpfunc(fn, debug)
 		for _, blk := range fn.Blocks {
 			for _, inst := range blk.Instrs {
 				if val, ok := inst.(ssa.Value); ok {
@@ -184,22 +192,12 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 
-	// log.Println(f)
+	// debug.Println(f)
 
 	for _, fn := range funcs {
-		// sb := &bytes.Buffer{}
-		// ssa.WriteFunction(sb, fn)
-		// io.Copy(os.Stdout, sb)
 		if !reportExported && token.IsExported(fn.Name()) {
 			continue
 		}
-		// if len(fn.Blocks[0].Instrs) > 4 {
-		// 	for _, blk := range fn.Blocks {
-		// 		for _, inst := range blk.Instrs {
-		// 			log.Println(fn, blk, inst, reflect.TypeOf(inst))
-		// 		}
-		// 	}
-		// }
 		r, ok := f[fn]
 		if !reportUncalled && !ok {
 			continue
@@ -215,4 +213,23 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	return nil, nil
+}
+
+func dumpfunc(fn *ssa.Function, debug *log.Logger) {
+	if len(fn.Blocks[0].Instrs) > 4 && debug.Writer() != io.Discard {
+		flags := debug.Flags()
+		defer debug.SetFlags(flags)
+		debug.SetFlags(0)
+		for _, blk := range fn.Blocks {
+			debug.Println(fn, blk)
+			for _, inst := range blk.Instrs {
+				name, typ := "", ""
+				if val, ok := inst.(ssa.Value); ok {
+					name = val.Name() + " ="
+					typ = val.Type().String()
+				}
+				debug.Printf("%7.7s %-24.24s %20.20s [%[2]T]", name, inst, typ)
+			}
+		}
+	}
 }

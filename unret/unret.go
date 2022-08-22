@@ -30,6 +30,12 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func run(pass *analysis.Pass) (interface{}, error) {
+	type poser interface {
+		Name() string
+		Pos() token.Pos
+		Type() types.Type
+	}
+
 	debug := log.New(log.Default().Writer(), pass.Pkg.Name()+": ", log.Lshortfile)
 	if !debugAnalyzer {
 		debug.SetOutput(io.Discard)
@@ -38,7 +44,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		used uint
 	}
 	prog := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
-	f := make(map[*types.Func]returns, len(prog.SrcFuncs))
+	used := make(map[poser]returns, len(prog.SrcFuncs))
 
 	recvType := func(t types.Type) string {
 		if ptr, ok := t.(*types.Pointer); ok {
@@ -50,24 +56,20 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return ""
 	}
 
-	// typeFuncs stores typename->funcname->*types.Func so that methods used
-	// via interface can be tracked. See testdata/b.
-	funcs := make([]*types.Func, 0, len(prog.SrcFuncs))
-	typeFuncs := make(map[string]map[string]*types.Func)
+	// typeFuncs stores typename->funcname->poser so that methods used
+	// via interface can be tracked. See testdata/src/b.
+	funcs := make([]poser, 0, len(prog.SrcFuncs))
+	typeFuncs := make(map[string]map[string]poser)
 	for _, fun := range prog.SrcFuncs {
-		if fun.Object() == nil {
-			// ignore anonymous functions... (testdata/src/d)
-			continue
-		}
-		funcs = append(funcs, fun.Object().(*types.Func))
+		funcs = append(funcs, fun)
 		if recv := fun.Signature.Recv(); recv != nil {
 			if typ := recvType(recv.Type()); typ != "" {
 				m, ok := typeFuncs[typ]
 				if !ok {
-					m = make(map[string]*types.Func)
+					m = make(map[string]poser)
 					typeFuncs[typ] = m
 				}
-				m[fun.Name()] = fun.Object().(*types.Func)
+				m[fun.Name()] = fun
 			}
 		}
 	}
@@ -81,7 +83,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		if itf, ok := typ.(*types.Interface); ok {
 			m, ok := typeFuncs[obj.Id()]
 			if !ok {
-				m = make(map[string]*types.Func, itf.NumMethods())
+				m = make(map[string]poser, itf.NumMethods())
 				typeFuncs[obj.Id()] = m
 			}
 			for i, n := 0, itf.NumMethods(); i < n; i++ {
@@ -96,11 +98,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// 	debug.Println("tf:", k, v)
 	// }
 
-	// funResult returns the *types.Func and result index that a ssa.Value
+	// funResult returns the poser and result index that a ssa.Value
 	// uses. Most of these indicate use of that result, but *ssa.Extract isn't
 	// itself a use.
-	var funResult func(op ssa.Value) (*types.Func, int)
-	funResult = func(op ssa.Value) (*types.Func, int) {
+	var funResult func(op ssa.Value) (poser, int)
+	funResult = func(op ssa.Value) (poser, int) {
 		switch op := op.(type) {
 		case *ssa.Extract:
 			fun, _ := funResult(op.Tuple)
@@ -108,10 +110,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		case *ssa.Call:
 			com := op.Common()
 			if sfunc := com.StaticCallee(); sfunc != nil {
-				if sfunc.Object() == nil {
-					return nil, 0 // ignore anonymous functions for now
-				}
-				return sfunc.Object().(*types.Func), 0
+				return sfunc, 0
 			}
 			if com.Method != nil {
 				switch v := com.Value.(type) {
@@ -136,16 +135,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			// debug.Printf("%#v", op)
 			return nil, 0
 
+		case *ssa.MakeClosure:
+			return op.Fn, 0
+
 		case *ssa.MakeInterface:
-			switch op.Type().(type) {
-			case *types.Named:
-				// debug.Println("MakeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
-				f, i := funResult(op.X)
-				// debug.Println("MakeInterface:", f, i)
-				return f, i
-			case *types.Interface:
-			}
-			return funResult(op.X)
+			// debug.Println("MakeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
+			f, i := funResult(op.X)
+			// debug.Println("MakeInterface:", f, i)
+			return f, i
 		case *ssa.ChangeInterface:
 			// debug.Println("ChangeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
 			return funResult(op.X)
@@ -164,14 +161,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					// consider extract as function uses, but not as result uses
 					case *ssa.Call:
 						fun, _ := funResult(val)
-						if r, ok := f[fun]; !ok {
-							f[fun] = r
+						if r, ok := used[fun]; fun != nil && !ok {
+							used[fun] = r
 						}
 						// keep going
 					case *ssa.Extract:
 						fun, _ := funResult(val)
-						if r, ok := f[fun]; !ok {
-							f[fun] = r
+						if r, ok := used[fun]; fun != nil && !ok {
+							used[fun] = r
 						}
 						continue
 					}
@@ -183,22 +180,40 @@ func run(pass *analysis.Pass) (interface{}, error) {
 						continue
 					}
 					if fun, res := funResult(*op); fun != nil {
-						r := f[fun]
+						if fun == nil {
+							continue
+						}
+						r := used[fun]
 						r.used |= 1 << res
-						f[fun] = r
+						used[fun] = r
+
+						if sfunc, ok := fun.(*ssa.Function); ok {
+							if fun, ok := sfunc.Object().(*types.Func); ok {
+								r := used[fun]
+								r.used |= 1 << res
+								used[fun] = r
+							}
+						}
 					}
 				}
 			}
 		}
 	}
 
-	// debug.Println(f)
+	// debug.Println("USES:", used)
+	// for fun, res := range used {
+	// 	pos := pass.Fset.Position(fun.Pos())
+	// 	nres := fun.Type().(*types.Signature).Results().Len()
+	// 	if nres > 0 {
+	// 		debug.Printf("  %s:%d: %s() %x/%x", pos.Filename, pos.Line, fun.Name(), res.used, uint(1<<nres)-1)
+	// 	}
+	// }
 
 	for _, fn := range funcs {
 		if !reportExported && token.IsExported(fn.Name()) {
 			continue
 		}
-		r, ok := f[fn]
+		r, ok := used[fn]
 		if !reportUncalled && !ok {
 			continue
 		}
@@ -207,7 +222,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			if (1<<uint(i))&r.used == 0 {
 				res := results.At(i)
 				rnt := strings.TrimSpace(res.Name() + " " + res.Type().String())
-				pass.Reportf(fn.Pos(), "%s result %d, %s is never used", fn.Name(), i, rnt)
+				pass.Reportf(fn.Pos(), "%s result %d (%s) is never used", fn.Name(), i, rnt)
+				// debug.Println(fn.Name(), "result", i, "unused")
 			}
 		}
 	}

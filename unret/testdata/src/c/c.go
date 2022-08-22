@@ -14,7 +14,7 @@ func (*bar) unused() error { return nil }
 
 type itf interface {
 	used() error
-	unused() error // want "error is never used"
+	unused() error // want "error\\) is never used"
 }
 
 func useNamed(i itf) {
@@ -24,7 +24,7 @@ func useNamed(i itf) {
 
 func useAnon(i interface {
 	used() error
-	unused() error // TODO:want "error is never used"
+	unused() error // TODO:want "error\\) is never used"
 },
 ) {
 	log.Println(i.used())

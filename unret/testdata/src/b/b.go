@@ -5,12 +5,12 @@ import "log"
 type foo struct{}
 
 func (*foo) used() error   { return nil }
-func (*foo) unused() error { return nil } // want "error is never used"
+func (*foo) unused() error { return nil } // want "error\\) is never used"
 
 type bar struct{}
 
 func (*bar) used() error   { return nil }
-func (*bar) unused() error { return nil } // want "error is never used"
+func (*bar) unused() error { return nil } // want "error\\) is never used"
 
 func use() {
 	f := foo{}

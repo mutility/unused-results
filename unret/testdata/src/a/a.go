@@ -5,10 +5,10 @@ import "log"
 func norets()                     {}
 func usedret() error              { return nil }
 func usedrets() (string, error)   { return "hi", nil }
-func unusedret() error            { return nil }       // want "error is never used"
-func unusedret1() (string, error) { return "hi", nil } // want "string is never used"
-func unusedret2() (string, error) { return "hi", nil } // want "error is never used"
-func unusedrets() (string, error) { return "hi", nil } // want "string is never used" "error is never used"
+func unusedret() error            { return nil }       // want "error\\) is never used"
+func unusedret1() (string, error) { return "hi", nil } // want "string\\) is never used"
+func unusedret2() (string, error) { return "hi", nil } // want "error\\) is never used"
+func unusedrets() (string, error) { return "hi", nil } // want "string\\) is never used" "error\\) is never used"
 func unusedfunc() (string, error) { return "hi", nil }
 func hello() string               { return "hi" }
 

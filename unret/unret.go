@@ -98,60 +98,76 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// 	debug.Println("tf:", k, v)
 	// }
 
+	closures := make(map[*ssa.Function][]*ssa.MakeClosure)
+	for _, fun := range prog.SrcFuncs {
+		for _, block := range fun.Blocks {
+			for _, instr := range block.Instrs {
+				if cl, ok := instr.(*ssa.MakeClosure); ok {
+					closures[cl.Fn.(*ssa.Function)] = append(closures[cl.Fn.(*ssa.Function)], cl)
+				}
+			}
+		}
+	}
+
 	// funResult returns the poser and result index that a ssa.Value
 	// uses. Most of these indicate use of that result, but *ssa.Extract isn't
 	// itself a use.
-	var funResult func(op ssa.Value) (poser, int)
-	funResult = func(op ssa.Value) (poser, int) {
+	var funResult func(op ssa.Value, extract func(string) poser) (poser, int)
+	funResult = func(op ssa.Value, extract func(string) poser) (poser, int) {
 		switch op := op.(type) {
 		case *ssa.Extract:
-			fun, _ := funResult(op.Tuple)
+			fun, _ := funResult(op.Tuple, extract)
 			return fun, op.Index
 		case *ssa.Call:
 			com := op.Common()
 			if sfunc := com.StaticCallee(); sfunc != nil {
 				return sfunc, 0
 			}
-			if com.Method != nil {
-				switch v := com.Value.(type) {
-				case *ssa.MakeInterface:
-					switch x := v.X.(type) {
-					case *ssa.Alloc:
-						if typ := recvType(x.Type()); typ != "" {
-							fun := typeFuncs[typ][com.Method.Name()]
-							return fun, 0
-						}
-					}
-				case *ssa.Parameter:
-					if typ := recvType(v.Type()); typ != "" {
-						if tfs, ok := typeFuncs[typ]; ok {
-							fun := tfs[com.Method.Name()]
-							return fun, 0
-						}
-					}
-				}
-				return funResult(com.Value)
+			extract = func(s string) poser {
+				return typeFuncs[s][com.Method.Name()]
 			}
+			return funResult(com.Value, extract)
+		case *ssa.MakeInterface:
+			return funResult(op.X, extract)
+		case *ssa.Alloc:
+			if typ := recvType(op.Type().Underlying().(*types.Pointer).Elem()); typ != "" {
+				return extract(typ), 0
+			}
+			return nil, 0
+		case *ssa.Parameter:
+			if typ := recvType(op.Type()); typ != "" {
+				return extract(typ), 0
+			}
+			return nil, 0
+		case *ssa.UnOp:
+			return funResult(op.X, extract)
+		case *ssa.FreeVar:
+			for i, fv := range op.Parent().FreeVars {
+				if fv != op {
+					continue
+				}
+				for _, bind := range closures[op.Parent()] {
+					bound := bind.Bindings[i]
+					return funResult(bound, extract)
+				}
+			}
+
 			// debug.Printf("%#v", op)
 			return nil, 0
 
 		case *ssa.MakeClosure:
 			return op.Fn, 0
 
-		case *ssa.MakeInterface:
-			// debug.Println("MakeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
-			f, i := funResult(op.X)
-			// debug.Println("MakeInterface:", f, i)
-			return f, i
 		case *ssa.ChangeInterface:
 			// debug.Println("ChangeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
-			return funResult(op.X)
+			return funResult(op.X, extract)
 		default:
 			// debug.Printf("whattabout %T: %v", op, op)
 			return nil, 0
 		}
 	}
 
+	nilExtract := func(string) poser { return nil }
 	for _, fn := range prog.SrcFuncs {
 		// dumpfunc(fn, debug)
 		for _, blk := range fn.Blocks {
@@ -160,17 +176,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					switch val := val.(type) {
 					// consider extract as function uses, but not as result uses
 					case *ssa.Call:
-						fun, _ := funResult(val)
+						fun, _ := funResult(val, nilExtract)
 						if r, ok := used[fun]; fun != nil && !ok {
 							used[fun] = r
 						}
-						// keep going
 					case *ssa.Extract:
-						fun, _ := funResult(val)
+						fun, _ := funResult(val, nilExtract)
 						if r, ok := used[fun]; fun != nil && !ok {
 							used[fun] = r
 						}
-						continue
+						continue // extracts are only a function use, so skip its operands
 					}
 				}
 
@@ -179,10 +194,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					if op == nil || *op == nil {
 						continue
 					}
-					if fun, res := funResult(*op); fun != nil {
-						if fun == nil {
-							continue
-						}
+					if fun, res := funResult(*op, nilExtract); fun != nil {
 						r := used[fun]
 						r.used |= 1 << res
 						used[fun] = r

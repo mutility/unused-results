@@ -98,12 +98,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// 	debug.Println("tf:", k, v)
 	// }
 
-	closures := make(map[*ssa.Function][]*ssa.MakeClosure)
+	closures := make(map[*ssa.Function]*ssa.MakeClosure)
 	for _, fun := range prog.SrcFuncs {
 		for _, block := range fun.Blocks {
 			for _, instr := range block.Instrs {
 				if cl, ok := instr.(*ssa.MakeClosure); ok {
-					closures[cl.Fn.(*ssa.Function)] = append(closures[cl.Fn.(*ssa.Function)], cl)
+					fn := cl.Fn.(*ssa.Function)
+					if prev, ok := closures[fn]; ok {
+						debug.Println("Repeat closure", prev, cl)
+					}
+					closures[fn] = cl
 				}
 			}
 		}
@@ -146,13 +150,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				if fv != op {
 					continue
 				}
-				for _, bind := range closures[op.Parent()] {
-					bound := bind.Bindings[i]
-					return funResult(bound, extract)
-				}
+				return funResult(closures[op.Parent()].Bindings[i], extract)
 			}
-
-			// debug.Printf("%#v", op)
 			return nil, 0
 
 		case *ssa.MakeClosure:

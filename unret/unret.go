@@ -32,9 +32,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		used uint
 	}
 	prog := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
-	f := make(map[*ssa.Function]returns, len(prog.SrcFuncs))
+	f := make(map[*types.Func]returns, len(prog.SrcFuncs))
 
-	invokes := make(map[types.Type][]*ssa.Function)
+	invokes := make(map[types.Type][]*types.Func)
 
 	recvType := func(t types.Type) string {
 		if ptr, ok := t.(*types.Pointer); ok {
@@ -46,27 +46,27 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		return ""
 	}
 
-	// typeFuncs stores typename->funcname->*ssa.Function so that methods used
+	// typeFuncs stores typename->funcname->*types.Func so that methods used
 	// via interface can be tracked. See testdata/b.
-	typeFuncs := make(map[string]map[string]*ssa.Function)
+	typeFuncs := make(map[string]map[string]*types.Func)
 	for _, fun := range prog.SrcFuncs {
 		if recv := fun.Signature.Recv(); recv != nil {
 			if typ := recvType(recv.Type()); typ != "" {
 				m, ok := typeFuncs[typ]
 				if !ok {
-					m = make(map[string]*ssa.Function)
+					m = make(map[string]*types.Func)
 					typeFuncs[typ] = m
 				}
-				m[fun.Name()] = fun
+				m[fun.Name()] = fun.Object().(*types.Func)
 			}
 		}
 	}
 
-	// funResult returns the *ssa.Function and result index that a ssa.Value
+	// funResult returns the *types.Func and result index that a ssa.Value
 	// uses. Most of these indicate use of that result, but *ssa.Extract isn't
 	// itself a use.
-	var funResult func(op ssa.Value) (*ssa.Function, int)
-	funResult = func(op ssa.Value) (*ssa.Function, int) {
+	var funResult func(op ssa.Value) (*types.Func, int)
+	funResult = func(op ssa.Value) (*types.Func, int) {
 		switch op := op.(type) {
 		case *ssa.Extract:
 			fun, _ := funResult(op.Tuple)
@@ -88,8 +88,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 			if op.Common().StaticCallee() == nil {
 				log.Printf("%#v", op)
+				return nil, 0
 			}
-			return op.Common().StaticCallee(), 0
+			return op.Common().StaticCallee().Object().(*types.Func), 0
 		case *ssa.MakeInterface:
 			switch op.Type().(type) {
 			case *types.Named:
@@ -110,7 +111,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	for _, fn := range prog.SrcFuncs {
-		invokes[fn.Type()] = append(invokes[fn.Type()], fn)
+		invokes[fn.Type()] = append(invokes[fn.Type()], fn.Object().(*types.Func))
 	}
 	// log.Println(invokes)
 	for _, fn := range prog.SrcFuncs {
@@ -165,7 +166,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		// 		}
 		// 	}
 		// }
-		r, ok := f[fn]
+		r, ok := f[fn.Object().(*types.Func)]
 		if !reportUncalled && !ok {
 			continue
 		}

@@ -17,7 +17,16 @@ type itf interface {
 	unused() error // want "error is never used"
 }
 
-func use(i itf) {
+func useNamed(i itf) {
+	log.Println(i.used())
+	_ = i.unused()
+}
+
+func useAnon(i interface {
+	used() error
+	unused() error // TODO:want "error is never used"
+},
+) {
 	log.Println(i.used())
 	_ = i.unused()
 }

@@ -3,7 +3,6 @@ package unret
 import (
 	"go/token"
 	"go/types"
-	"log"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -34,8 +33,6 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	prog := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	f := make(map[*types.Func]returns, len(prog.SrcFuncs))
 
-	invokes := make(map[types.Type][]*types.Func)
-
 	recvType := func(t types.Type) string {
 		if ptr, ok := t.(*types.Pointer); ok {
 			t = ptr.Elem()
@@ -48,8 +45,14 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 	// typeFuncs stores typename->funcname->*types.Func so that methods used
 	// via interface can be tracked. See testdata/b.
+	funcs := make([]*types.Func, 0, len(prog.SrcFuncs))
 	typeFuncs := make(map[string]map[string]*types.Func)
 	for _, fun := range prog.SrcFuncs {
+		if fun.Object() == nil {
+			// ignore anonymous functions... (testdata/src/d)
+			continue
+		}
+		funcs = append(funcs, fun.Object().(*types.Func))
 		if recv := fun.Signature.Recv(); recv != nil {
 			if typ := recvType(recv.Type()); typ != "" {
 				m, ok := typeFuncs[typ]
@@ -62,6 +65,30 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 
+	for _, name := range pass.Pkg.Scope().Names() {
+		obj := pass.Pkg.Scope().Lookup(name)
+		typ := obj.Type()
+		if nam, ok := typ.(*types.Named); ok {
+			typ = nam.Underlying()
+		}
+		if itf, ok := typ.(*types.Interface); ok {
+			m, ok := typeFuncs[obj.Id()]
+			if !ok {
+				m = make(map[string]*types.Func, itf.NumMethods())
+				typeFuncs[obj.Id()] = m
+			}
+			for i, n := 0, itf.NumMethods(); i < n; i++ {
+				fn := itf.Method(i)
+				m[fn.Name()] = fn
+				funcs = append(funcs, fn)
+			}
+		}
+	}
+
+	// for k, v := range typeFuncs {
+	// 	log.Println("tf:", k, v)
+	// }
+
 	// funResult returns the *types.Func and result index that a ssa.Value
 	// uses. Most of these indicate use of that result, but *ssa.Extract isn't
 	// itself a use.
@@ -73,6 +100,12 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return fun, op.Index
 		case *ssa.Call:
 			com := op.Common()
+			if sfunc := com.StaticCallee(); sfunc != nil {
+				if sfunc.Object() == nil {
+					return nil, 0 // ignore anonymous functions for now
+				}
+				return sfunc.Object().(*types.Func), 0
+			}
 			if com.Method != nil {
 				switch v := com.Value.(type) {
 				case *ssa.MakeInterface:
@@ -83,14 +116,19 @@ func run(pass *analysis.Pass) (interface{}, error) {
 							return fun, 0
 						}
 					}
+				case *ssa.Parameter:
+					if typ := recvType(v.Type()); typ != "" {
+						if tfs, ok := typeFuncs[typ]; ok {
+							fun := tfs[com.Method.Name()]
+							return fun, 0
+						}
+					}
 				}
 				return funResult(com.Value)
 			}
-			if op.Common().StaticCallee() == nil {
-				log.Printf("%#v", op)
-				return nil, 0
-			}
-			return op.Common().StaticCallee().Object().(*types.Func), 0
+			// log.Printf("%#v", op)
+			return nil, 0
+
 		case *ssa.MakeInterface:
 			switch op.Type().(type) {
 			case *types.Named:
@@ -110,10 +148,6 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 
-	for _, fn := range prog.SrcFuncs {
-		invokes[fn.Type()] = append(invokes[fn.Type()], fn.Object().(*types.Func))
-	}
-	// log.Println(invokes)
 	for _, fn := range prog.SrcFuncs {
 		for _, blk := range fn.Blocks {
 			for _, inst := range blk.Instrs {
@@ -152,7 +186,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 	// log.Println(f)
 
-	for _, fn := range prog.SrcFuncs {
+	for _, fn := range funcs {
 		// sb := &bytes.Buffer{}
 		// ssa.WriteFunction(sb, fn)
 		// io.Copy(os.Stdout, sb)
@@ -166,15 +200,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		// 		}
 		// 	}
 		// }
-		r, ok := f[fn.Object().(*types.Func)]
+		r, ok := f[fn]
 		if !reportUncalled && !ok {
 			continue
 		}
-		results := fn.Signature.Results()
-		for i := 0; i < results.Len(); i++ {
+		results := fn.Type().(*types.Signature).Results()
+		for i, n := 0, results.Len(); i < n; i++ {
 			if (1<<uint(i))&r.used == 0 {
 				res := results.At(i)
-				pass.Reportf(fn.Pos(), "%s result %d, %s is never used", fn.Name(), i, strings.TrimSpace(res.Name()+" "+res.Type().String()))
+				rnt := strings.TrimSpace(res.Name() + " " + res.Type().String())
+				pass.Reportf(fn.Pos(), "%s result %d, %s is never used", fn.Name(), i, rnt)
 			}
 		}
 	}

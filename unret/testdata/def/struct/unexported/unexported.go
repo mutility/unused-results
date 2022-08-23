@@ -6,14 +6,12 @@ type struc struct {
 	a, b, c int
 }
 
-// since *struc is returned by an exported function, assume its exported methods are used
-
 func (s *struc) Res0()
-func (s *struc) Res1() int
-func (s *struc) Res2() (x, y int)
-func (s *struc) Res3() (int, string, error)
+func (s *struc) Res1() int                  // want "result 0 \\(int\\) is never used"
+func (s *struc) Res2() (x, y int)           // want "result 1 \\(y int\\) is never used"
+func (s *struc) Res3() (int, string, error) // want "result 0 \\(int\\) is never used"
 
-func Use(s *struc) *struc {
+func use(s *struc) {
 	s.Res0()
 	s.Res1()
 
@@ -22,5 +20,4 @@ func Use(s *struc) *struc {
 	_, _, c := s.Res3()
 
 	log.Print(a, b, c)
-	return s
 }

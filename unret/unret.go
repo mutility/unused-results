@@ -46,24 +46,24 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	prog := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	used := make(map[poser]usage, len(prog.SrcFuncs))
 
-	recvType := func(t types.Type) string {
+	recvType := func(t types.Type) *types.TypeName {
 		if ptr, ok := t.(*types.Pointer); ok {
 			t = ptr.Elem()
 		}
 		if nam, ok := t.(*types.Named); ok && nam.Obj() != nil {
-			return nam.Obj().Id()
+			return nam.Obj()
 		}
-		return ""
+		return nil
 	}
 
 	// typeFuncs stores typename->funcname->poser so that methods used
 	// via interface can be tracked. See testdata/src/b.
 	funcs := make([]poser, 0, len(prog.SrcFuncs))
-	typeFuncs := make(map[string]map[string]poser)
+	typeFuncs := make(map[*types.TypeName]map[string]poser)
 	for _, fun := range prog.SrcFuncs {
 		funcs = append(funcs, fun)
 		if recv := fun.Signature.Recv(); recv != nil {
-			if typ := recvType(recv.Type()); typ != "" {
+			if typ := recvType(recv.Type()); typ != nil {
 				m, ok := typeFuncs[typ]
 				if !ok {
 					m = make(map[string]poser)
@@ -81,10 +81,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			typ = nam.Underlying()
 		}
 		if itf, ok := typ.(*types.Interface); ok {
-			m, ok := typeFuncs[obj.Id()]
+			m, ok := typeFuncs[obj.(*types.TypeName)]
 			if !ok {
 				m = make(map[string]poser, itf.NumMethods())
-				typeFuncs[obj.Id()] = m
+				typeFuncs[obj.(*types.TypeName)] = m
 			}
 			for i, n := 0, itf.NumMethods(); i < n; i++ {
 				fn := itf.Method(i)
@@ -98,8 +98,17 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// 	debug.Println("tf:", k, v)
 	// }
 
+	returned := make(map[*types.TypeName]struct{}) // track types that get returned
 	closures := make(map[*ssa.Function]*ssa.MakeClosure)
 	for _, fun := range prog.SrcFuncs {
+		if token.IsExported(fun.Name()) {
+			res := fun.Signature.Results()
+			for i, nr := 0, res.Len(); i < nr; i++ {
+				if t := recvType(res.At(i).Type()); t != nil {
+					returned[t] = struct{}{}
+				}
+			}
+		}
 		for _, block := range fun.Blocks {
 			for _, instr := range block.Instrs {
 				if cl, ok := instr.(*ssa.MakeClosure); ok && len(cl.Bindings) > 0 {
@@ -119,8 +128,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// funResult returns the poser and result index that a ssa.Value
 	// uses. Most of these indicate use of that result, but *ssa.Extract isn't
 	// itself a use.
-	var funResult func(op ssa.Value, extract func(string) poser) (res []poser, idx int)
-	funResult = func(op ssa.Value, extract func(string) poser) (res []poser, idx int) {
+	var funResult func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx int)
+	funResult = func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx int) {
 		switch op := op.(type) {
 		case *ssa.Extract:
 			fun, _ := funResult(op.Tuple, extract)
@@ -131,26 +140,26 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				return append(res, sfunc), 0
 			}
 			if com.Method != nil {
-				extract = func(s string) poser {
-					return typeFuncs[s][com.Method.Name()]
+				extract = func(tn *types.TypeName) poser {
+					return typeFuncs[tn][com.Method.Name()]
 				}
 			}
 			return funResult(com.Value, extract)
 		case *ssa.MakeInterface:
 			f, i := funResult(op.X, extract)
 			if nam, ok := op.Type().(*types.Named); ok {
-				if t := extract(nam.Obj().Id()); t != nil {
+				if t := extract(nam.Obj()); t != nil {
 					return append(f, t), i
 				}
 			}
 			return f, i
 		case *ssa.Alloc:
-			if typ := recvType(op.Type().Underlying().(*types.Pointer).Elem()); typ != "" {
+			if typ := recvType(op.Type().Underlying().(*types.Pointer).Elem()); typ != nil {
 				return append(res, extract(typ)), 0
 			}
 			return nil, 0
 		case *ssa.Parameter:
-			if typ := recvType(op.Type()); typ != "" {
+			if typ := recvType(op.Type()); typ != nil {
 				return append(res, extract(typ)), 0
 			}
 			return nil, 0
@@ -183,7 +192,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 
-	nilExtract := func(string) poser { return nil }
+	nilExtract := func(*types.TypeName) poser { return nil }
 	for _, fn := range prog.SrcFuncs {
 		// dumpfunc(fn, debug)
 		for _, blk := range fn.Blocks {
@@ -254,7 +263,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 	for _, fn := range funcs {
 		if !reportExported && token.IsExported(fn.Name()) {
-			continue
+			switch fn := fn.(type) {
+			case *ssa.Function:
+				if fn.Signature.Recv() == nil {
+					continue
+				}
+
+				t := recvType(fn.Signature.Recv().Type())
+				if t == nil || t.Exported() {
+					continue
+				}
+				if _, ok := returned[t]; ok {
+					continue
+				}
+			default:
+				continue
+			}
 		}
 		r, ok := used[fn]
 		if !reportUncalled && !ok {

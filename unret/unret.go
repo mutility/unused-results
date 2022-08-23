@@ -97,7 +97,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// for k, v := range typeFuncs {
 	// 	debug.Println("tf:", k, v)
 	// }
-
+	anonTypes := make(map[string]*types.TypeName)  // track anon interfaces
 	returned := make(map[*types.TypeName]struct{}) // track types that get returned
 	closures := make(map[*ssa.Function]*ssa.MakeClosure)
 	for _, fun := range prog.SrcFuncs {
@@ -160,7 +160,23 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return nil, 0
 		case *ssa.Parameter:
 			if typ := recvType(op.Type()); typ != nil {
-				return append(res, extract(typ)), 0
+				ex := extract(typ)
+				return append(res, ex), 0
+			}
+			if itf, ok := op.Type().(*types.Interface); ok {
+				anon, ok := anonTypes[itf.String()]
+				if !ok {
+					anon = types.NewTypeName(op.Pos(), prog.Pkg.Pkg, itf.String(), itf)
+					anonTypes[itf.String()] = anon
+					m := make(map[string]poser, itf.NumExplicitMethods())
+					typeFuncs[anon] = m
+					for i, ni := 0, itf.NumExplicitMethods(); i < ni; i++ {
+						meth := itf.Method(i)
+						m[meth.Name()] = meth
+						funcs = append(funcs, meth)
+					}
+				}
+				return append(res, extract(anon)), 0
 			}
 			return nil, 0
 		case *ssa.UnOp:

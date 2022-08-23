@@ -9,5 +9,17 @@ import (
 
 func Test(t *testing.T) {
 	testdata := analysistest.TestData()
-	analysistest.Run(t, testdata, unret.Analyzer, "a", "b", "c", "d", "e", "f", "g")
+	t.Run("defaults", func(t *testing.T) {
+		analysistest.Run(t, testdata, unret.Analyzer, "./def/...")
+	})
+	t.Run("exported", func(t *testing.T) {
+		unret.Analyzer.Flags.Lookup("exported").Value.Set("true")
+		analysistest.Run(t, testdata, unret.Analyzer, "./exp/...")
+		unret.Analyzer.Flags.Lookup("exported").Value.Set("false")
+	})
+	t.Run("uncalled", func(t *testing.T) {
+		unret.Analyzer.Flags.Lookup("uncalled").Value.Set("true")
+		analysistest.Run(t, testdata, unret.Analyzer, "./unc/...")
+		unret.Analyzer.Flags.Lookup("uncalled").Value.Set("false")
+	})
 }

@@ -119,8 +119,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// funResult returns the poser and result index that a ssa.Value
 	// uses. Most of these indicate use of that result, but *ssa.Extract isn't
 	// itself a use.
-	var funResult func(op ssa.Value, extract func(string) poser) (poser, int)
-	funResult = func(op ssa.Value, extract func(string) poser) (poser, int) {
+	var funResult func(op ssa.Value, extract func(string) poser) (res []poser, idx int)
+	funResult = func(op ssa.Value, extract func(string) poser) (res []poser, idx int) {
 		switch op := op.(type) {
 		case *ssa.Extract:
 			fun, _ := funResult(op.Tuple, extract)
@@ -128,7 +128,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		case *ssa.Call:
 			com := op.Common()
 			if sfunc := com.StaticCallee(); sfunc != nil {
-				return sfunc, 0
+				return append(res, sfunc), 0
 			}
 			if com.Method != nil {
 				extract = func(s string) poser {
@@ -137,15 +137,21 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 			return funResult(com.Value, extract)
 		case *ssa.MakeInterface:
-			return funResult(op.X, extract)
+			f, i := funResult(op.X, extract)
+			if nam, ok := op.Type().(*types.Named); ok {
+				if t := extract(nam.Obj().Id()); t != nil {
+					return append(f, t), i
+				}
+			}
+			return f, i
 		case *ssa.Alloc:
 			if typ := recvType(op.Type().Underlying().(*types.Pointer).Elem()); typ != "" {
-				return extract(typ), 0
+				return append(res, extract(typ)), 0
 			}
 			return nil, 0
 		case *ssa.Parameter:
 			if typ := recvType(op.Type()); typ != "" {
-				return extract(typ), 0
+				return append(res, extract(typ)), 0
 			}
 			return nil, 0
 		case *ssa.UnOp:
@@ -163,10 +169,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			if sfn := op.Fn.(*ssa.Function); sfn.Synthetic != "" {
 				if tfn, ok := sfn.Object().(*types.Func); ok {
 					sig := tfn.Type().(*types.Signature)
-					return typeFuncs[recvType(sig.Recv().Type())][tfn.Name()], 0
+					return append(res, typeFuncs[recvType(sig.Recv().Type())][tfn.Name()]), 0
 				}
 			}
-			return op.Fn, 0
+			return append(res, op.Fn), 0
 
 		case *ssa.ChangeInterface:
 			// debug.Println("ChangeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
@@ -186,14 +192,18 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					switch val := val.(type) {
 					// consider extract as function uses, but not as result uses
 					case *ssa.Call:
-						fun, _ := funResult(val, nilExtract)
-						if r, ok := used[fun]; fun != nil && !ok {
-							used[fun] = r
+						funs, _ := funResult(val, nilExtract)
+						for _, fun := range funs {
+							if r, ok := used[fun]; fun != nil && !ok {
+								used[fun] = r
+							}
 						}
 					case *ssa.Extract:
-						fun, _ := funResult(val, nilExtract)
-						if r, ok := used[fun]; fun != nil && !ok {
-							used[fun] = r
+						funs, _ := funResult(val, nilExtract)
+						for _, fun := range funs {
+							if r, ok := used[fun]; fun != nil && !ok {
+								used[fun] = r
+							}
 						}
 						continue // extracts are only a function use, so skip its operands
 					}
@@ -224,7 +234,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					if op == nil || *op == nil {
 						continue
 					}
-					if fun, res := funResult(*op, nilExtract); fun != nil {
+					funs, res := funResult(*op, nilExtract)
+					for _, fun := range funs {
 						apply(inst, fun, func(r *usage) { r.results |= 1 << res })
 					}
 				}

@@ -2,13 +2,11 @@ package smakeitf
 
 import "log"
 
-// TODO: Since the interface is referenced, we should report on it.
-
 type itf interface {
 	rets0()
-	rets1() int                  // TODO:want "result 0 \\(int\\) is never used"
-	rets2() (x, y int)           // TODO:want "result 1 \\(y int\\) is never used"
-	rets3() (int, string, error) // TODO:want "result 0 \\(int\\) is never used"
+	rets1() int                  // want "result 0 \\(int\\) is never used"
+	rets2() (x, y int)           // want "result 1 \\(y int\\) is never used"
+	rets3() (int, string, error) // want "result 0 \\(int\\) is never used"
 }
 
 // Since struc{} is the static implementation, it can be reported upon directly.

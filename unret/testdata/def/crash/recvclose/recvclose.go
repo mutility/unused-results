@@ -2,10 +2,8 @@ package recvclose
 
 type struc struct{}
 
-// TODO:evaluate; should probably be 0 or 3 diagnostics on rets3, not 2.
-
 func (*struc) rets0()                      {}
-func (*struc) rets3() (int, string, error) { return 4, "5", nil } // want "never" "never"
+func (*struc) rets3() (int, string, error) { return 4, "5", nil } // want "0 .int. is never used" "1 .string. is never used" "2 .error. is never used"
 
 func use(s *struc) {
 	use0 := func(fn func()) {}

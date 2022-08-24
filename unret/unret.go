@@ -103,6 +103,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	anonTypes := make(map[string]*types.TypeName)  // track anon interfaces
 	returned := make(map[*types.TypeName]struct{}) // track types that get returned
 	closures := make(map[*ssa.Function]*ssa.MakeClosure)
+	stored := make(map[ssa.Value]ssa.Value)
 	for _, fun := range prog.SrcFuncs {
 		if token.IsExported(fun.Name()) {
 			res := fun.Signature.Results()
@@ -114,15 +115,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 		for _, block := range fun.Blocks {
 			for _, instr := range block.Instrs {
-				if cl, ok := instr.(*ssa.MakeClosure); ok && len(cl.Bindings) > 0 {
-					fn := cl.Fn.(*ssa.Function)
-					if fn.Synthetic != "" {
-						continue // ignore these; see testdata/src/g
+				switch instr := instr.(type) {
+				case *ssa.MakeClosure:
+					if len(instr.Bindings) > 0 {
+						fn := instr.Fn.(*ssa.Function)
+						if fn.Synthetic != "" {
+							continue // ignore these; see testdata/src/g
+						}
+						if prev, ok := closures[fn]; ok {
+							debug.Println("Repeat closure", prev, instr, pass.Fset.Position(prev.Pos()), pass.Fset.Position(instr.Pos()))
+						}
+						closures[fn] = instr
 					}
-					if prev, ok := closures[fn]; ok {
-						debug.Println("Repeat closure", prev, cl, pass.Fset.Position(prev.Pos()), pass.Fset.Position(cl.Pos()))
+				case *ssa.Store:
+					if _, ok := instr.Addr.(*ssa.Alloc); ok {
+						stored[instr.Addr] = instr.Val
 					}
-					closures[fn] = cl
 				}
 			}
 		}
@@ -147,24 +155,28 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// funResult returns the poser and result index that a ssa.Value
 	// uses. Most of these indicate use of that result, but *ssa.Extract isn't
 	// itself a use.
-	var funResult func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx int)
-	funResult = func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx int) {
+	type index struct{ int }
+	self := index{0}
+	called := index{1}
+	nothing := index{0}
+	var funResult func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx index)
+	funResult = func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx index) {
 		switch op := op.(type) {
 		case *ssa.Extract:
 			fun, _ := funResult(op.Tuple, extract)
-			return fun, op.Index
+			return fun, index{op.Index + 1}
 		case *ssa.Call:
 			com := op.Common()
 			if sfunc := com.StaticCallee(); sfunc != nil {
-				return append(res, sfunc), 0
+				return append(res, sfunc), called
 			}
 			if com.Method != nil {
 				extract = func(tn *types.TypeName) poser {
 					return typeFuncs[tn][com.Method.Name()]
 				}
 			}
-			f, i := funResult(com.Value, extract)
-			return f, i
+			f, _ := funResult(com.Value, extract)
+			return f, called
 		case *ssa.MakeInterface:
 			f, i := funResult(op.X, extract)
 			switch t := op.Type().(type) {
@@ -177,19 +189,24 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 			return f, i
 		case *ssa.Alloc:
-			if typ := recvType(op.Type().Underlying().(*types.Pointer).Elem()); typ != nil {
-				return append(res, extract(typ)), 0
+			if val, ok := stored[op]; ok {
+				// avoid infinite recursion... not quite sure what repros it.
+				delete(stored, op)
+				defer func() { stored[op] = val }()
+				return funResult(val, extract)
+			} else if typ := recvType(op.Type().Underlying().(*types.Pointer).Elem()); typ != nil {
+				return append(res, extract(typ)), self
 			}
-			return nil, 0
+			return nil, nothing
 		case *ssa.Parameter:
 			if typ := recvType(op.Type()); typ != nil {
 				ex := extract(typ)
-				return append(res, ex), 0
+				return append(res, ex), self
 			}
 			if itf, ok := op.Type().(*types.Interface); ok {
-				return append(res, extract(trackAnonInterface(itf))), 0
+				return append(res, extract(trackAnonInterface(itf))), self
 			}
-			return nil, 0
+			return nil, nothing
 		case *ssa.UnOp:
 			return funResult(op.X, extract)
 		case *ssa.FreeVar:
@@ -197,25 +214,48 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				if fv != op {
 					continue
 				}
-				return funResult(closures[op.Parent()].Bindings[i], extract)
+				f, _ := funResult(closures[op.Parent()].Bindings[i], extract)
+				res = append(res, f...)
 			}
-			return nil, 0
+			return res, self
 
 		case *ssa.MakeClosure:
 			if sfn := op.Fn.(*ssa.Function); sfn.Synthetic != "" {
 				if tfn, ok := sfn.Object().(*types.Func); ok {
 					sig := tfn.Type().(*types.Signature)
-					return append(res, typeFuncs[recvType(sig.Recv().Type())][tfn.Name()]), 0
+					return append(res, typeFuncs[recvType(sig.Recv().Type())][tfn.Name()]), self
 				}
 			}
-			return append(res, op.Fn), 0
+			return append(res, op.Fn), nothing
 
 		case *ssa.ChangeInterface:
 			// debug.Println("ChangeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
 			return funResult(op.X, extract)
 		default:
 			// debug.Printf("whattabout %T: %v", op, op)
-			return nil, 0
+			return nil, nothing
+		}
+	}
+
+	// apply updates records, both direct and any indirect ones.
+	// inst is used only for (disabled) logging.
+	apply := func(inst ssa.Instruction, fun poser, set func(*usage)) {
+		r := used[fun]
+		set(&r)
+		used[fun] = r
+		if sfunc, ok := fun.(*ssa.Function); ok {
+			if fun, ok := sfunc.Object().(*types.Func); ok {
+				r := used[fun]
+				set(&r)
+				used[fun] = r
+				// var val string
+				// if v, ok := inst.(ssa.Value); ok {
+				// 	val = v.Name()
+				// }
+				// direct := usage{}
+				// set(&direct)
+				// debug.Println("USED", fun.Name(), direct, "by", inst, val)
+			}
 		}
 	}
 
@@ -224,45 +264,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		// dumpfunc(fn, debug)
 		for _, blk := range fn.Blocks {
 			for _, inst := range blk.Instrs {
-				if val, ok := inst.(ssa.Value); ok {
-					switch val := val.(type) {
-					// consider extract as function uses, but not as result uses
-					case *ssa.Call:
-						funs, _ := funResult(val, nilExtract)
-						for _, fun := range funs {
-							if r, ok := used[fun]; fun != nil && !ok {
-								used[fun] = r
-							}
-						}
-					case *ssa.Extract:
-						funs, _ := funResult(val, nilExtract)
-						for _, fun := range funs {
-							if r, ok := used[fun]; fun != nil && !ok {
-								used[fun] = r
-							}
-						}
-						continue // extracts are only a function use, so skip its operands
-					}
-				}
-
-				// apply updates records, both direct and any indirect ones.
-				// inst is used only for (disabled) logging.
-				apply := func(inst ssa.Instruction, fun poser, set func(*usage)) {
-					r := used[fun]
-					set(&r)
-					used[fun] = r
-					if sfunc, ok := fun.(*ssa.Function); ok {
-						if fun, ok := sfunc.Object().(*types.Func); ok {
-							r := used[fun]
-							set(&r)
+				switch inst := inst.(type) {
+				case ssa.Value:
+					// switch inst := inst.(type) {
+					// case *ssa.Call, *ssa.Extract:
+					funs, _ := funResult(inst, nilExtract)
+					for _, fun := range funs {
+						if r, ok := used[fun]; fun != nil && !ok {
 							used[fun] = r
-							// var val string
-							// if v, ok := inst.(ssa.Value); ok {
-							// 	val = v.Name()
-							// }
-							// debug.Println("USED", fun.Name(), up(returns{}), "by", inst, val)
 						}
 					}
+					// Don't consider raw extract as use of a value.
+					// This lets a, _ := f() not 'use' f's second result.
+					if _, ok := inst.(*ssa.Extract); ok {
+						continue
+					}
+					// }
 				}
 
 				// consider other instructions referring to call/extract as function and result uses
@@ -272,7 +289,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					}
 					funs, res := funResult(*op, nilExtract)
 					for _, fun := range funs {
-						apply(inst, fun, func(r *usage) { r.results |= 1 << res })
+						apply(inst, fun, func(r *usage) { r.results |= 1 << res.int })
 					}
 				}
 			}
@@ -313,7 +330,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 		results := fn.Type().(*types.Signature).Results()
 		for i, n := 0, results.Len(); i < n; i++ {
-			if (1<<uint(i))&r.results == 0 {
+			if (1<<uint(i+1))&r.results == 0 {
 				res := results.At(i)
 				rnt := strings.TrimSpace(res.Name() + " " + res.Type().String())
 				pass.Reportf(fn.Pos(), "%s result %d (%s) is never used", fn.Name(), i, rnt)
@@ -326,7 +343,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 func dumpfunc(fn *ssa.Function, debug *log.Logger) {
-	if len(fn.Blocks[0].Instrs) > 4 && debug.Writer() != io.Discard {
+	if len(fn.Blocks[0].Instrs) > 1 && debug.Writer() != io.Discard {
 		flags := debug.Flags()
 		defer debug.SetFlags(flags)
 		debug.SetFlags(0)

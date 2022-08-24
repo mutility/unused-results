@@ -6,10 +6,10 @@ type S struct {
 	a, b, c int
 }
 
-func (s *S) Res0()
-func (s *S) Res1() int
-func (s *S) Res2() (x, y int)
-func (s *S) Res3() (int, string, error)
+func (s *S) Res0()                      {}
+func (s *S) Res1() int                  { return 1 }
+func (s *S) Res2() (x, y int)           { return 2, 3 }
+func (s *S) Res3() (int, string, error) { return 4, "5", nil }
 
 func use(s *S) {
 	s.Res0()

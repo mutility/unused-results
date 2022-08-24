@@ -27,4 +27,9 @@ func Test(t *testing.T) {
 		analysistest.Run(t, testdata, unret.Analyzer, "./pas/...")
 		unret.Analyzer.Flags.Lookup("passed").Value.Set("false")
 	})
+	t.Run("returned", func(t *testing.T) {
+		unret.Analyzer.Flags.Lookup("returned").Value.Set("true")
+		analysistest.Run(t, testdata, unret.Analyzer, "./ret/...")
+		unret.Analyzer.Flags.Lookup("returned").Value.Set("false")
+	})
 }

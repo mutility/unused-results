@@ -75,16 +75,19 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	for _, name := range pass.Pkg.Scope().Names() {
-		obj := pass.Pkg.Scope().Lookup(name)
-		typ := obj.Type()
+		tn, _ := pass.Pkg.Scope().Lookup(name).(*types.TypeName)
+		if tn == nil {
+			continue
+		}
+		typ := tn.Type()
 		if nam, ok := typ.(*types.Named); ok {
 			typ = nam.Underlying()
 		}
 		if itf, ok := typ.(*types.Interface); ok {
-			m, ok := typeFuncs[obj.(*types.TypeName)]
+			m, ok := typeFuncs[tn]
 			if !ok {
 				m = make(map[string]poser, itf.NumMethods())
-				typeFuncs[obj.(*types.TypeName)] = m
+				typeFuncs[tn] = m
 			}
 			for i, n := 0, itf.NumMethods(); i < n; i++ {
 				fn := itf.Method(i)

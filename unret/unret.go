@@ -18,6 +18,7 @@ var (
 	reportExported bool
 	reportUncalled bool
 	reportPassed   bool
+	reportReturned bool
 	debugAnalyzer  bool
 )
 
@@ -25,6 +26,7 @@ func init() {
 	Analyzer.Flags.BoolVar(&reportExported, "exported", false, "report unused results from exported functions")
 	Analyzer.Flags.BoolVar(&reportUncalled, "uncalled", false, "report unused results from uncalled functions")
 	Analyzer.Flags.BoolVar(&reportPassed, "passed", false, "report unused results from functions passed to other functions")
+	Analyzer.Flags.BoolVar(&reportReturned, "returned", false, "report unused results from functions returned by other functions")
 	Analyzer.Flags.BoolVar(&debugAnalyzer, "verbose", true, "issue debug logging")
 }
 
@@ -47,8 +49,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		debug.SetOutput(io.Discard)
 	}
 	type usage struct {
-		results uint // track explicitly used results as a bit field
-		passed  bool // tracks funcs passed to other funcs
+		results  uint // track explicitly used results as a bit field
+		passed   bool // tracks funcs passed to other funcs
+		returned bool // tracks funcs returned by other funcs
 	}
 	prog := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	used := make(map[poser]usage, len(prog.SrcFuncs))
@@ -299,13 +302,18 @@ func run(pass *analysis.Pass) (interface{}, error) {
 						continue
 					}
 					funs, res := funResult(*op, nilExtract)
-					for _, fun := range funs {
-						apply(inst, fun, func(r *usage) { r.results |= 1 << res.int })
-					}
-					if _, ok := inst.(*ssa.Call); ok && res == self {
-						for _, fun := range funs {
-							apply(inst, fun, func(r *usage) { r.passed = true })
+					set := func(r *usage) { r.results |= 1 << res.int }
+					if res == self {
+						inner := set
+						switch inst.(type) {
+						case *ssa.Call:
+							set = func(r *usage) { r.passed = true; inner(r) }
+						case *ssa.Return:
+							set = func(r *usage) { r.returned = true; inner(r) }
 						}
+					}
+					for _, fun := range funs {
+						apply(inst, fun, set)
 					}
 				}
 			}
@@ -341,10 +349,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 		}
 		r, ok := used[fn]
-		if !reportUncalled && !ok {
-			continue
-		}
-		if !reportPassed && r.passed {
+		switch {
+		case !reportUncalled && !ok,
+			!reportPassed && r.passed,
+			!reportReturned && r.returned:
 			continue
 		}
 		results := fn.Type().(*types.Signature).Results()

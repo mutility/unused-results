@@ -22,4 +22,9 @@ func Test(t *testing.T) {
 		analysistest.Run(t, testdata, unret.Analyzer, "./unc/...")
 		unret.Analyzer.Flags.Lookup("uncalled").Value.Set("false")
 	})
+	t.Run("passed", func(t *testing.T) {
+		unret.Analyzer.Flags.Lookup("passed").Value.Set("true")
+		analysistest.Run(t, testdata, unret.Analyzer, "./pas/...")
+		unret.Analyzer.Flags.Lookup("passed").Value.Set("false")
+	})
 }

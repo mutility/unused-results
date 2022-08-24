@@ -9,7 +9,7 @@ func (*struc) rets3() (int, string, error) { return 4, "5", nil }
 
 func use(s *struc, itf interface{ use(...interface{}) }) {
 	itf.use(s.rets0)
-	// TODO: itf.use(s.rets1)
-	// TODO: itf.use(s.rets2)
-	// TODO: itf.use(s.rets3)
+	itf.use(s.rets1)
+	itf.use(s.rets2)
+	itf.use(s.rets3)
 }

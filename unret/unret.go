@@ -14,11 +14,17 @@ import (
 
 const doc = `unret reports returns from unexported functions that are never used.`
 
-var reportExported, reportUncalled, debugAnalyzer bool
+var (
+	reportExported bool
+	reportUncalled bool
+	reportPassed   bool
+	debugAnalyzer  bool
+)
 
 func init() {
 	Analyzer.Flags.BoolVar(&reportExported, "exported", false, "report unused results from exported functions")
 	Analyzer.Flags.BoolVar(&reportUncalled, "uncalled", false, "report unused results from uncalled functions")
+	Analyzer.Flags.BoolVar(&reportPassed, "passed", false, "report unused results from functions passed to other functions")
 	Analyzer.Flags.BoolVar(&debugAnalyzer, "verbose", true, "issue debug logging")
 }
 
@@ -42,6 +48,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 	type usage struct {
 		results uint // track explicitly used results as a bit field
+		passed  bool // tracks funcs passed to other funcs
 	}
 	prog := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	used := make(map[poser]usage, len(prog.SrcFuncs))
@@ -128,9 +135,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 						closures[fn] = instr
 					}
 				case *ssa.Store:
-					if _, ok := instr.Addr.(*ssa.Alloc); ok {
-						stored[instr.Addr] = instr.Val
-					}
+					addr := storeVal(instr.Addr)
+					val := storeVal(instr.Val)
+					stored[addr] = val
+					// debug.Println("STORED", addr.Name(), addr, "=", val.Name(), val)
 				}
 			}
 		}
@@ -189,15 +197,18 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			}
 			return f, i
 		case *ssa.Alloc:
-			if val, ok := stored[op]; ok {
+			addr := storeVal(op)
+			if val, ok := stored[addr]; ok {
 				// avoid infinite recursion... not quite sure what repros it.
-				delete(stored, op)
-				defer func() { stored[op] = val }()
+				delete(stored, addr)
+				defer func() { stored[addr] = val }()
 				return funResult(val, extract)
 			} else if typ := recvType(op.Type().Underlying().(*types.Pointer).Elem()); typ != nil {
 				return append(res, extract(typ)), self
 			}
 			return nil, nothing
+		case *ssa.Slice: // may be varargs
+			return funResult(op.X, extract)
 		case *ssa.Parameter:
 			if typ := recvType(op.Type()); typ != nil {
 				ex := extract(typ)
@@ -291,6 +302,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					for _, fun := range funs {
 						apply(inst, fun, func(r *usage) { r.results |= 1 << res.int })
 					}
+					if _, ok := inst.(*ssa.Call); ok && res == self {
+						for _, fun := range funs {
+							apply(inst, fun, func(r *usage) { r.passed = true })
+						}
+					}
 				}
 			}
 		}
@@ -328,6 +344,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		if !reportUncalled && !ok {
 			continue
 		}
+		if !reportPassed && r.passed {
+			continue
+		}
 		results := fn.Type().(*types.Signature).Results()
 		for i, n := 0, results.Len(); i < n; i++ {
 			if (1<<uint(i+1))&r.results == 0 {
@@ -357,6 +376,17 @@ func dumpfunc(fn *ssa.Function, debug *log.Logger) {
 				}
 				debug.Printf("%7.7s %-30.30s %20.20s [%[2]T]", name, inst, typ)
 			}
+		}
+	}
+}
+
+func storeVal(val ssa.Value) ssa.Value {
+	for {
+		switch v := val.(type) {
+		case *ssa.IndexAddr:
+			val = v.X
+		default:
+			return val
 		}
 	}
 }

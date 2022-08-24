@@ -9,7 +9,7 @@ func (*struc) rets3() (int, string, error) { return 4, "5", nil }
 
 func Use(s *struc, fn func(...interface{})) {
 	fn(s.rets0)
-	// TODO: fn(s.rets1)
-	// TODO: fn(s.rets2)
-	// TODO: fn(s.rets3)
+	fn(s.rets1)
+	fn(s.rets2)
+	fn(s.rets3)
 }

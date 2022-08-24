@@ -11,7 +11,7 @@ func (*struc) rets3() (int, string, error) { return 4, "5", nil }
 
 func use(s *struc) {
 	log.Print(s.rets0)
-	// TODO: log.Print(s.rets1)
-	// TODO: log.Print(s.rets2)
-	// TODO: log.Print(s.rets3)
+	log.Print(s.rets1)
+	log.Print(s.rets2)
+	log.Print(s.rets3)
 }

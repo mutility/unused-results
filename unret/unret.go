@@ -125,6 +125,22 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 
+	trackAnonInterface := func(itf *types.Interface) *types.TypeName {
+		anon, ok := anonTypes[itf.String()]
+		if !ok {
+			anon = types.NewTypeName(token.NoPos, prog.Pkg.Pkg, itf.String(), itf)
+			anonTypes[itf.String()] = anon
+			m := make(map[string]poser, itf.NumExplicitMethods())
+			typeFuncs[anon] = m
+			for i, ni := 0, itf.NumExplicitMethods(); i < ni; i++ {
+				meth := itf.Method(i)
+				m[meth.Name()] = meth
+				funcs = append(funcs, meth)
+			}
+		}
+		return anon
+	}
+
 	// funResult returns the poser and result index that a ssa.Value
 	// uses. Most of these indicate use of that result, but *ssa.Extract isn't
 	// itself a use.
@@ -144,12 +160,16 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					return typeFuncs[tn][com.Method.Name()]
 				}
 			}
-			return funResult(com.Value, extract)
+			f, i := funResult(com.Value, extract)
+			return f, i
 		case *ssa.MakeInterface:
 			f, i := funResult(op.X, extract)
-			if nam, ok := op.Type().(*types.Named); ok {
-				if t := extract(nam.Obj()); t != nil {
-					return append(f, t), i
+			switch t := op.Type().(type) {
+			case *types.Interface:
+				return append(f, extract(trackAnonInterface(t))), i
+			case *types.Named:
+				if f2 := extract(t.Obj()); f2 != nil {
+					return append(f, f2), i
 				}
 			}
 			return f, i
@@ -164,19 +184,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				return append(res, ex), 0
 			}
 			if itf, ok := op.Type().(*types.Interface); ok {
-				anon, ok := anonTypes[itf.String()]
-				if !ok {
-					anon = types.NewTypeName(op.Pos(), prog.Pkg.Pkg, itf.String(), itf)
-					anonTypes[itf.String()] = anon
-					m := make(map[string]poser, itf.NumExplicitMethods())
-					typeFuncs[anon] = m
-					for i, ni := 0, itf.NumExplicitMethods(); i < ni; i++ {
-						meth := itf.Method(i)
-						m[meth.Name()] = meth
-						funcs = append(funcs, meth)
-					}
-				}
-				return append(res, extract(anon)), 0
+				return append(res, extract(trackAnonInterface(itf))), 0
 			}
 			return nil, 0
 		case *ssa.UnOp:

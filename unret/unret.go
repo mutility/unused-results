@@ -170,8 +170,15 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	self := index{0}
 	called := index{1}
 	nothing := index{0}
+	traversed := make(map[ssa.Value]struct{})
 	var funResult func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx index)
 	funResult = func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx index) {
+		if _, ok := traversed[op]; ok {
+			return res, nothing
+		}
+		traversed[op] = struct{}{}
+		defer delete(traversed, op)
+
 		switch op := op.(type) {
 		case *ssa.Extract:
 			fun, _ := funResult(op.Tuple, extract)
@@ -223,6 +230,17 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			return nil, nothing
 		case *ssa.UnOp:
 			return funResult(op.X, extract)
+		case *ssa.Phi:
+			for _, edge := range op.Edges {
+				switch edge := edge.(type) {
+				case *ssa.Function:
+					res = append(res, edge)
+				default:
+					f, _ := funResult(edge, extract)
+					res = append(res, f...)
+				}
+			}
+			return res, self
 		case *ssa.FreeVar:
 			for i, fv := range op.Parent().FreeVars {
 				if fv != op {

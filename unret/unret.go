@@ -287,6 +287,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// apply updates records, both direct and any indirect ones.
 	// inst is used only for (disabled) logging.
 	apply := func(inst ssa.Instruction, fun poser, set func(*usage)) {
+		// var val string
+		// if v, ok := inst.(ssa.Value); ok {
+		// 	val = v.Name()
+		// }
+		// direct := usage{}
+		// set(&direct)
+		// debug.Println("USED", fun.Name(), direct, "by", inst, val)
 		r := used[fun]
 		set(&r)
 		used[fun] = r
@@ -295,13 +302,6 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				r := used[fun]
 				set(&r)
 				used[fun] = r
-				// var val string
-				// if v, ok := inst.(ssa.Value); ok {
-				// 	val = v.Name()
-				// }
-				// direct := usage{}
-				// set(&direct)
-				// debug.Println("USED", fun.Name(), direct, "by", inst, val)
 			}
 		}
 	}
@@ -358,7 +358,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	// 	pos := pass.Fset.Position(fun.Pos())
 	// 	nres := fun.Type().(*types.Signature).Results().Len()
 	// 	if nres > 0 {
-	// 		debug.Printf("  %s:%d: %s() %x/%x", pos.Filename, pos.Line, fun.Name(), res.used, uint(1<<nres)-1)
+	// 		debug.Printf("  %s:%d: %s() %x/%x passed:%t returned:%t", pos.Filename, pos.Line, fun.Name(), res.results, uint(1<<nres)-1, res.passed, res.returned)
 	// 	}
 	// }
 

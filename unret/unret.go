@@ -182,7 +182,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		switch op := op.(type) {
 		case *ssa.Extract:
 			if fun, _ := funResult(op.Tuple, extract); fun != nil {
-			return fun, index{op.Index + 1}
+				return fun, index{op.Index + 1}
 			}
 			return res, nothing
 		case *ssa.Call:
@@ -228,8 +228,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		case *ssa.Parameter:
 			if typ := recvType(op.Type()); typ != nil {
 				if ex := extract(typ); ex != nil {
-				return append(res, ex), self
-			}
+					return append(res, ex), self
+				}
 			}
 			if itf, ok := op.Type().(*types.Interface); ok {
 				if ex := extract(trackAnonInterface(itf)); ex != nil {
@@ -266,17 +266,23 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					sig := tfn.Type().(*types.Signature)
 					if fun := typeFuncs[recvType(sig.Recv().Type())][tfn.Name()]; fun != nil {
 						res = append(res, fun)
-				}
+					}
 					return res, self
-			}
+				}
 			}
 			if op.Fn != nil {
-			return append(res, op.Fn), nothing
+				return append(res, op.Fn), nothing
 			}
 			return res, nothing
 
 		case *ssa.ChangeInterface:
 			// debug.Println("ChangeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
+			return funResult(op.X, extract)
+		case *ssa.ChangeType:
+			switch x := op.X.(type) {
+			case *ssa.Function:
+				return append(res, x), self
+			}
 			return funResult(op.X, extract)
 		default:
 			// debug.Printf("whattabout %T: %v", op, op)

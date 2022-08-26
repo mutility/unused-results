@@ -14,27 +14,32 @@ import (
 
 const doc = `unret reports returns from unexported functions that are never used.`
 
-var (
-	reportExported bool
-	reportUncalled bool
-	reportPassed   bool
-	reportReturned bool
-	debugAnalyzer  bool
-)
-
-func init() {
-	Analyzer.Flags.BoolVar(&reportExported, "exported", false, "report unused results from exported functions")
-	Analyzer.Flags.BoolVar(&reportUncalled, "uncalled", false, "report unused results from uncalled functions")
-	Analyzer.Flags.BoolVar(&reportPassed, "passed", false, "report unused results from functions passed to other functions")
-	Analyzer.Flags.BoolVar(&reportReturned, "returned", false, "report unused results from functions returned by other functions")
-	Analyzer.Flags.BoolVar(&debugAnalyzer, "verbose", true, "issue debug logging")
+type unretAnalyzer struct {
+	*analysis.Analyzer
+	ReportExported bool // report unused results from exported functions
+	ReportUncalled bool // report unused results from uncalled functions
+	ReportPassed   bool // report unused results from functions passed to other functions
+	ReportReturned bool // report unused results from functions returned by other
+	Debug          bool
 }
 
-var Analyzer = &analysis.Analyzer{
-	Name:     "unret",
-	Doc:      doc,
-	Requires: []*analysis.Analyzer{buildssa.Analyzer},
-	Run:      run,
+func Analyzer() *unretAnalyzer {
+	u := &unretAnalyzer{
+		Analyzer: &analysis.Analyzer{
+			Name:     "unret",
+			Doc:      doc,
+			Requires: []*analysis.Analyzer{buildssa.Analyzer},
+		},
+	}
+	u.Flags.BoolVar(&u.ReportExported, "exported", false, "report unused results from exported functions")
+	u.Flags.BoolVar(&u.ReportUncalled, "uncalled", false, "report unused results from uncalled functions")
+	u.Flags.BoolVar(&u.ReportPassed, "passed", false, "report unused results from functions passed to other functions")
+	u.Flags.BoolVar(&u.ReportReturned, "returned", false, "report unused results from functions returned by other functions")
+	u.Flags.BoolVar(&u.Debug, "verbose", true, "issue debug logging")
+
+	u.Run = u.run
+
+	return u
 }
 
 type usage struct {
@@ -50,9 +55,9 @@ type callee interface {
 	Type() types.Type
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func (u *unretAnalyzer) run(pass *analysis.Pass) (interface{}, error) {
 	debug := log.New(log.Default().Writer(), pass.Pkg.Name()+": ", log.Lshortfile)
-	if !debugAnalyzer {
+	if !u.Debug {
 		debug.SetOutput(io.Discard)
 	}
 	prog := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
@@ -360,7 +365,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	debugDumpUses(debug, pass.Fset, used)
 
 	for _, fn := range funcs {
-		if !reportExported && token.IsExported(fn.Name()) {
+		if !u.ReportExported && token.IsExported(fn.Name()) {
 			switch fn := fn.(type) {
 			case *ssa.Function:
 				if fn.Signature.Recv() == nil {
@@ -380,9 +385,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 		r, ok := used[fn]
 		switch {
-		case !reportUncalled && !ok,
-			!reportPassed && r.passed,
-			!reportReturned && r.returned:
+		case !u.ReportUncalled && !ok,
+			!u.ReportPassed && r.passed,
+			!u.ReportReturned && r.returned:
 			continue
 		}
 		results := fn.Type().(*types.Signature).Results()

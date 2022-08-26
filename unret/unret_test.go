@@ -10,26 +10,31 @@ import (
 func Test(t *testing.T) {
 	testdata := analysistest.TestData()
 	t.Run("defaults", func(t *testing.T) {
-		analysistest.Run(t, testdata, unret.Analyzer, "./def/...")
+		t.Parallel()
+		analysistest.Run(t, testdata, unret.Analyzer().Analyzer, "./def/...")
 	})
 	t.Run("exported", func(t *testing.T) {
-		unret.Analyzer.Flags.Lookup("exported").Value.Set("true")
-		analysistest.Run(t, testdata, unret.Analyzer, "./exp/...")
-		unret.Analyzer.Flags.Lookup("exported").Value.Set("false")
+		t.Parallel()
+		u := unret.Analyzer()
+		u.ReportExported = true
+		analysistest.Run(t, testdata, u.Analyzer, "./exp/...")
 	})
 	t.Run("uncalled", func(t *testing.T) {
-		unret.Analyzer.Flags.Lookup("uncalled").Value.Set("true")
-		analysistest.Run(t, testdata, unret.Analyzer, "./unc/...")
-		unret.Analyzer.Flags.Lookup("uncalled").Value.Set("false")
+		t.Parallel()
+		u := unret.Analyzer()
+		u.ReportUncalled = true
+		analysistest.Run(t, testdata, u.Analyzer, "./unc/...")
 	})
 	t.Run("passed", func(t *testing.T) {
-		unret.Analyzer.Flags.Lookup("passed").Value.Set("true")
-		analysistest.Run(t, testdata, unret.Analyzer, "./pas/...")
-		unret.Analyzer.Flags.Lookup("passed").Value.Set("false")
+		t.Parallel()
+		u := unret.Analyzer()
+		u.ReportPassed = true
+		analysistest.Run(t, testdata, u.Analyzer, "./pas/...")
 	})
 	t.Run("returned", func(t *testing.T) {
-		unret.Analyzer.Flags.Lookup("returned").Value.Set("true")
-		analysistest.Run(t, testdata, unret.Analyzer, "./ret/...")
-		unret.Analyzer.Flags.Lookup("returned").Value.Set("false")
+		t.Parallel()
+		u := unret.Analyzer()
+		u.ReportReturned = true
+		analysistest.Run(t, testdata, u.Analyzer, "./ret/...")
 	})
 }

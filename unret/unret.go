@@ -37,24 +37,26 @@ var Analyzer = &analysis.Analyzer{
 	Run:      run,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
-	type poser interface {
-		Name() string
-		Pos() token.Pos
-		Type() types.Type
-	}
+type usage struct {
+	results  uint // track explicitly used results as a bit field
+	passed   bool // tracks funcs passed to other funcs
+	returned bool // tracks funcs returned by other funcs
+}
 
+// callee is a target we may report. Typically a *ssa.Function or a *types.Func.
+type callee interface {
+	Name() string
+	Pos() token.Pos
+	Type() types.Type
+}
+
+func run(pass *analysis.Pass) (interface{}, error) {
 	debug := log.New(log.Default().Writer(), pass.Pkg.Name()+": ", log.Lshortfile)
 	if !debugAnalyzer {
 		debug.SetOutput(io.Discard)
 	}
-	type usage struct {
-		results  uint // track explicitly used results as a bit field
-		passed   bool // tracks funcs passed to other funcs
-		returned bool // tracks funcs returned by other funcs
-	}
 	prog := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
-	used := make(map[poser]usage, len(prog.SrcFuncs))
+	used := make(map[callee]usage, len(prog.SrcFuncs))
 
 	recvType := func(t types.Type) *types.TypeName {
 		if ptr, ok := t.(*types.Pointer); ok {
@@ -68,15 +70,15 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 	// typeFuncs stores typename->funcname->poser so that methods used
 	// via interface can be tracked. See testdata/src/b.
-	funcs := make([]poser, 0, len(prog.SrcFuncs))
-	typeFuncs := make(map[*types.TypeName]map[string]poser)
+	funcs := make([]callee, 0, len(prog.SrcFuncs))
+	typeFuncs := make(map[*types.TypeName]map[string]callee)
 	for _, fun := range prog.SrcFuncs {
 		funcs = append(funcs, fun)
 		if recv := fun.Signature.Recv(); recv != nil {
 			if typ := recvType(recv.Type()); typ != nil {
 				m, ok := typeFuncs[typ]
 				if !ok {
-					m = make(map[string]poser)
+					m = make(map[string]callee)
 					typeFuncs[typ] = m
 				}
 				m[fun.Name()] = fun
@@ -96,7 +98,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		if itf, ok := typ.(*types.Interface); ok {
 			m, ok := typeFuncs[tn]
 			if !ok {
-				m = make(map[string]poser, itf.NumMethods())
+				m = make(map[string]callee, itf.NumMethods())
 				typeFuncs[tn] = m
 			}
 			for i, n := 0, itf.NumMethods(); i < n; i++ {
@@ -152,7 +154,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		if !ok {
 			anon = types.NewTypeName(token.NoPos, prog.Pkg.Pkg, itf.String(), itf)
 			anonTypes[itf.String()] = anon
-			m := make(map[string]poser, itf.NumExplicitMethods())
+			m := make(map[string]callee, itf.NumExplicitMethods())
 			typeFuncs[anon] = m
 			for i, ni := 0, itf.NumExplicitMethods(); i < ni; i++ {
 				meth := itf.Method(i)
@@ -171,8 +173,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	called := index{1}
 	nothing := index{0}
 	traversed := make(map[ssa.Value]struct{})
-	var funResult func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx index)
-	funResult = func(op ssa.Value, extract func(*types.TypeName) poser) (res []poser, idx index) {
+	var funResult func(op ssa.Value, extract func(*types.TypeName) callee) (res []callee, idx index)
+	funResult = func(op ssa.Value, extract func(*types.TypeName) callee) (res []callee, idx index) {
 		if _, ok := traversed[op]; ok {
 			return res, nothing
 		}
@@ -191,7 +193,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				return append(res, sfunc), called
 			}
 			if com.Method != nil {
-				extract = func(tn *types.TypeName) poser {
+				extract = func(tn *types.TypeName) callee {
 					return typeFuncs[tn][com.Method.Name()]
 				}
 			}
@@ -292,14 +294,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 	// apply updates records, both direct and any indirect ones.
 	// inst is used only for (disabled) logging.
-	apply := func(inst ssa.Instruction, fun poser, set func(*usage)) {
-		// var val string
-		// if v, ok := inst.(ssa.Value); ok {
-		// 	val = v.Name()
-		// }
-		// direct := usage{}
-		// set(&direct)
-		// debug.Println("USED", fun.Name(), direct, "by", inst, val)
+	apply := func(inst ssa.Instruction, fun callee, set func(*usage)) {
+		debugTrackApply(debug, inst, fun, set)
 		r := used[fun]
 		set(&r)
 		used[fun] = r
@@ -312,9 +308,9 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 
-	nilExtract := func(*types.TypeName) poser { return nil }
+	nilExtract := func(*types.TypeName) callee { return nil }
 	for _, fn := range prog.SrcFuncs {
-		// dumpfunc(fn, debug)
+		debugDumpFuncSSA(fn, debug)
 		for _, blk := range fn.Blocks {
 			for _, inst := range blk.Instrs {
 				switch inst := inst.(type) {
@@ -359,14 +355,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 
-	// debug.Println("USES:", used)
-	// for fun, res := range used {
-	// 	pos := pass.Fset.Position(fun.Pos())
-	// 	nres := fun.Type().(*types.Signature).Results().Len()
-	// 	if nres > 0 {
-	// 		debug.Printf("  %s:%d: %s() %x/%x passed:%t returned:%t", pos.Filename, pos.Line, fun.Name(), res.results, uint(1<<nres)-1, res.passed, res.returned)
-	// 	}
-	// }
+	debugDumpUses(debug, pass.Fset, used)
 
 	for _, fn := range funcs {
 		if !reportExported && token.IsExported(fn.Name()) {
@@ -406,25 +395,6 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	return nil, nil
-}
-
-func dumpfunc(fn *ssa.Function, debug *log.Logger) {
-	if len(fn.Blocks[0].Instrs) > 1 && debug.Writer() != io.Discard {
-		flags := debug.Flags()
-		defer debug.SetFlags(flags)
-		debug.SetFlags(0)
-		for _, blk := range fn.Blocks {
-			debug.Println(fn, blk)
-			for _, inst := range blk.Instrs {
-				name, typ := "", ""
-				if val, ok := inst.(ssa.Value); ok {
-					name = val.Name() + " ="
-					typ = val.Type().String()
-				}
-				debug.Printf("%7.7s %-30.30s %20.20s [%[2]T]", name, inst, typ)
-			}
-		}
-	}
 }
 
 func storeVal(val ssa.Value) ssa.Value {

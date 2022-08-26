@@ -181,8 +181,10 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 		switch op := op.(type) {
 		case *ssa.Extract:
-			fun, _ := funResult(op.Tuple, extract)
+			if fun, _ := funResult(op.Tuple, extract); fun != nil {
 			return fun, index{op.Index + 1}
+			}
+			return res, nothing
 		case *ssa.Call:
 			com := op.Common()
 			if sfunc := com.StaticCallee(); sfunc != nil {
@@ -199,10 +201,12 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			f, i := funResult(op.X, extract)
 			switch t := op.Type().(type) {
 			case *types.Interface:
-				return append(f, extract(trackAnonInterface(t))), i
+				if ex := extract(trackAnonInterface(t)); ex != nil {
+					return append(f, ex), i
+				}
 			case *types.Named:
-				if f2 := extract(t.Obj()); f2 != nil {
-					return append(f, f2), i
+				if ex := extract(t.Obj()); ex != nil {
+					return append(f, ex), i
 				}
 			}
 			return f, i
@@ -214,18 +218,23 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				defer func() { stored[addr] = val }()
 				return funResult(val, extract)
 			} else if typ := recvType(op.Type().Underlying().(*types.Pointer).Elem()); typ != nil {
-				return append(res, extract(typ)), self
+				if ex := extract(typ); ex != nil {
+					return append(res, ex), self
+				}
 			}
 			return nil, nothing
 		case *ssa.Slice: // may be varargs
 			return funResult(op.X, extract)
 		case *ssa.Parameter:
 			if typ := recvType(op.Type()); typ != nil {
-				ex := extract(typ)
+				if ex := extract(typ); ex != nil {
 				return append(res, ex), self
 			}
+			}
 			if itf, ok := op.Type().(*types.Interface); ok {
-				return append(res, extract(trackAnonInterface(itf))), self
+				if ex := extract(trackAnonInterface(itf)); ex != nil {
+					return append(res, ex), self
+				}
 			}
 			return nil, nothing
 		case *ssa.UnOp:
@@ -255,17 +264,23 @@ func run(pass *analysis.Pass) (interface{}, error) {
 			if sfn := op.Fn.(*ssa.Function); sfn.Synthetic != "" {
 				if tfn, ok := sfn.Object().(*types.Func); ok {
 					sig := tfn.Type().(*types.Signature)
-					return append(res, typeFuncs[recvType(sig.Recv().Type())][tfn.Name()]), self
+					if fun := typeFuncs[recvType(sig.Recv().Type())][tfn.Name()]; fun != nil {
+						res = append(res, fun)
 				}
+					return res, self
 			}
+			}
+			if op.Fn != nil {
 			return append(res, op.Fn), nothing
+			}
+			return res, nothing
 
 		case *ssa.ChangeInterface:
 			// debug.Println("ChangeInterface:", op.Type(), reflect.TypeOf(op.Type()), op.X, reflect.TypeOf(op.X))
 			return funResult(op.X, extract)
 		default:
 			// debug.Printf("whattabout %T: %v", op, op)
-			return nil, nothing
+			return res, nothing
 		}
 	}
 

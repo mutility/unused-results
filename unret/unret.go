@@ -340,9 +340,11 @@ func run(pass *analysis.Pass) (interface{}, error) {
 					set := func(r *usage) { r.results |= 1 << res.int }
 					if res == self {
 						inner := set
-						switch inst.(type) {
+						switch inst := inst.(type) {
 						case *ssa.Call:
-							set = func(r *usage) { r.passed = true; inner(r) }
+							if *op != inst.Call.Value { // callee is not passed, only args
+								set = func(r *usage) { r.passed = true; inner(r) }
+							}
 						case *ssa.Return:
 							set = func(r *usage) { r.returned = true; inner(r) }
 						}

@@ -20,6 +20,7 @@ type unretAnalyzer struct {
 	ReportUncalled bool // report unused results from uncalled functions
 	ReportPassed   bool // report unused results from functions passed to other functions
 	ReportReturned bool // report unused results from functions returned by other
+	ReportAssigned bool // report unused results from functions assigned to storage
 	Debug          bool
 }
 
@@ -35,7 +36,8 @@ func Analyzer() *unretAnalyzer {
 	u.Flags.BoolVar(&u.ReportUncalled, "uncalled", false, "report unused results from uncalled functions")
 	u.Flags.BoolVar(&u.ReportPassed, "passed", false, "report unused results from functions passed to other functions")
 	u.Flags.BoolVar(&u.ReportReturned, "returned", false, "report unused results from functions returned by other functions")
-	u.Flags.BoolVar(&u.Debug, "verbose", true, "issue debug logging")
+	u.Flags.BoolVar(&u.ReportAssigned, "assigned", false, "report unused results from functions assigned to storage")
+	u.Flags.BoolVar(&u.Debug, "verbose", false, "issue debug logging")
 
 	u.Run = u.run
 
@@ -46,6 +48,7 @@ type usage struct {
 	results  uint // track explicitly used results as a bit field
 	passed   bool // tracks funcs passed to other funcs
 	returned bool // tracks funcs returned by other funcs
+	assigned bool // tracks funcs assigned to storage
 }
 
 // callee is a target we may report. Typically a *ssa.Function or a *types.Func.
@@ -334,6 +337,14 @@ func (u *unretAnalyzer) run(pass *analysis.Pass) (interface{}, error) {
 						continue
 					}
 					// }
+				case *ssa.Store:
+					switch inst.Addr.(type) {
+					case *ssa.FieldAddr:
+						switch inst.Val.(type) {
+						case *ssa.Function:
+							apply(inst, inst.Val, func(r *usage) { r.assigned = true })
+						}
+					}
 				}
 
 				// consider other instructions referring to call/extract as function and result uses
@@ -352,6 +363,13 @@ func (u *unretAnalyzer) run(pass *analysis.Pass) (interface{}, error) {
 							}
 						case *ssa.Return:
 							set = func(r *usage) { r.returned = true; inner(r) }
+						case *ssa.Store:
+							if *op == inst.Val {
+								switch inst.Addr.(type) {
+								case *ssa.FieldAddr:
+									set = func(r *usage) { r.assigned = true; inner(r) }
+								}
+							}
 						}
 					}
 					for _, fun := range funs {
@@ -386,6 +404,7 @@ func (u *unretAnalyzer) run(pass *analysis.Pass) (interface{}, error) {
 		r, ok := used[fn]
 		switch {
 		case !u.ReportUncalled && !ok,
+			!u.ReportAssigned && r.assigned,
 			!u.ReportPassed && r.passed,
 			!u.ReportReturned && r.returned:
 			continue

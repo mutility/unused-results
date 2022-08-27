@@ -37,4 +37,10 @@ func Test(t *testing.T) {
 		u.ReportReturned = true
 		analysistest.Run(t, testdata, u.Analyzer, "./ret/...")
 	})
+	t.Run("assigned", func(t *testing.T) {
+		t.Parallel()
+		u := unret.Analyzer()
+		u.ReportAssigned = true
+		analysistest.Run(t, testdata, u.Analyzer, "./sto/...")
+	})
 }

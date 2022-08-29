@@ -1,4 +1,4 @@
-module github.com/mutility/unused-results/v1
+module github.com/mutility/unused-results
 
 go 1.18
 

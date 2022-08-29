@@ -1,3 +1,8 @@
+// Package unret implements the unused-results analyzer. It reports per callee
+// (a function, interface, or closure) the results that were ignored. By
+// default it does not report results from exported or uncalled callees, nor
+// from ones that appear likely to be exported in some other way. These
+// defaults can be overridden.
 package unret
 
 import (
@@ -14,6 +19,7 @@ import (
 
 const doc = `unret reports returns from unexported functions that are never used.`
 
+// unretAnalyzer offers configuration options for the unused-results analyzer.
 type unretAnalyzer struct {
 	*analysis.Analyzer
 	ReportExported bool // report unused results from exported functions
@@ -24,6 +30,8 @@ type unretAnalyzer struct {
 	Debug          bool
 }
 
+// Analyzer returns a new unretAnalyzer that can be configured before using
+// with, e.g., an analysis checker or test harness.
 func Analyzer() *unretAnalyzer {
 	u := &unretAnalyzer{
 		Analyzer: &analysis.Analyzer{

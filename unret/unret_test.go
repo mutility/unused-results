@@ -3,7 +3,7 @@ package unret_test
 import (
 	"testing"
 
-	"github.com/mutility/analyzers/unret"
+	"github.com/mutility/unused-results/unret"
 	"golang.org/x/tools/go/analysis/analysistest"
 )
 

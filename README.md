@@ -6,6 +6,8 @@ that identifies ignored results from the functions, interfaces, and closures in
 your package. It is meant as a tool to help you find flaws in your design or
 implementation. Just remember that not all unused results are flaws.
 
+[![CI](https://github.com/mutility/unused-results/actions/workflows/build.yaml/badge.svg)](https://github.com/mutility/unused-results/actions/workflows/build.yaml)
+
 ## Example messages
 
 Given the following source code `example.go` simplified from

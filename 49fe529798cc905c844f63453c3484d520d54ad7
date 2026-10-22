@@ -1,0 +1,14 @@
+all:
+mutility/unused-results 235 230
+mod:
+github.com/mutility/unused-results 235 230
+root:
+github.com/mutility/unused-results 2 0
+github.com/mutility/unused-results/unret 233 230
+pkg:
+github.com/mutility/unused-results 2 0
+github.com/mutility/unused-results/unret 233 230
+file:
+github.com/mutility/unused-results/unret/unret_ndebug.go 0 0
+github.com/mutility/unused-results/unret/unret.go 233 230
+github.com/mutility/unused-results/main.go 2 0
